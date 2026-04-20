@@ -1,0 +1,59 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Player {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  wonMatches    Match[]         @relation("Winner")
+  lostMatches   Match[]         @relation("Loser")
+  currentRating PlayerRating?
+  ratingHistory RatingHistory[]
+}
+
+model Match {
+  id          String   @id @default(cuid())
+  playedAt    DateTime @default(now())
+  format      String   @default("single")
+  winnerId    String
+  loserId     String
+  winnerScore Int?
+  loserScore  Int?
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  winner        Player          @relation("Winner", fields: [winnerId], references: [id])
+  loser         Player          @relation("Loser", fields: [loserId], references: [id])
+  ratingChanges RatingHistory[]
+}
+
+model PlayerRating {
+  id         String   @id @default(cuid())
+  playerId   String   @unique
+  rating     Float    @default(1500)
+  rd         Float    @default(350)
+  volatility Float    @default(0.06)
+  updatedAt  DateTime @updatedAt
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+}
+
+model RatingHistory {
+  id           String   @id @default(cuid())
+  playerId     String
+  matchId      String?
+  ratingBefore Float
+  rdBefore     Float
+  ratingAfter  Float
+  rdAfter      Float
+  timestamp    DateTime @default(now())
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  match  Match? @relation(fields: [matchId], references: [id])
+}

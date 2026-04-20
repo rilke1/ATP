@@ -1,0 +1,254 @@
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { getLeaderboard } from "@/lib/stats";
+import { rankScore } from "@/lib/glicko2";
+
+export async function GET() {
+  const [leaderboard, allMatches] = await Promise.all([
+    getLeaderboard(),
+    prisma.match.findMany({
+      orderBy: { playedAt: "asc" },
+      include: {
+        winner: { include: { currentRating: true } },
+        loser: { include: { currentRating: true } },
+      },
+    }),
+  ]);
+
+  if (allMatches.length === 0) {
+    return NextResponse.json({ insights: [] });
+  }
+
+  const insights: Array<{ title: string; value: string; detail: string; emoji: string }> = [];
+
+  // Most active player
+  const activityMap = new Map<string, { name: string; count: number }>();
+  for (const m of allMatches) {
+    for (const p of [m.winner, m.loser]) {
+      const cur = activityMap.get(p.id) ?? { name: p.name, count: 0 };
+      activityMap.set(p.id, { ...cur, count: cur.count + 1 });
+    }
+  }
+  const mostActive = [...activityMap.values()].sort((a, b) => b.count - a.count)[0];
+  if (mostActive) {
+    insights.push({
+      emoji: "🏓",
+      title: "Most Active Player",
+      value: mostActive.name,
+      detail: `${mostActive.count} matches played`,
+    });
+  }
+
+  // Biggest upset: loser had a much higher rating than winner at the time of the match
+  // Use ratingHistory to find rating at match time
+  const ratingHistories = await prisma.ratingHistory.findMany({ include: { match: true } });
+  const histByMatch = new Map<string, typeof ratingHistories>();
+  for (const h of ratingHistories) {
+    if (!h.matchId) continue;
+    const arr = histByMatch.get(h.matchId) ?? [];
+    arr.push(h);
+    histByMatch.set(h.matchId, arr);
+  }
+
+  let biggestUpsetDiff = 0;
+  let biggestUpset: { winnerName: string; loserName: string; diff: number } | null = null;
+
+  for (const m of allMatches) {
+    const hist = histByMatch.get(m.id) ?? [];
+    const winnerHist = hist.find((h) => h.playerId === m.winnerId);
+    const loserHist = hist.find((h) => h.playerId === m.loserId);
+    if (!winnerHist || !loserHist) continue;
+    const diff = winnerHist.ratingBefore - loserHist.ratingBefore;
+    // Upset = loser had higher rating, so diff is negative; bigger absolute = bigger upset
+    if (diff < biggestUpsetDiff) {
+      biggestUpsetDiff = diff;
+      biggestUpset = {
+        winnerName: m.winner.name,
+        loserName: m.loser.name,
+        diff: Math.abs(diff),
+      };
+    }
+  }
+
+  if (biggestUpset) {
+    insights.push({
+      emoji: "💥",
+      title: "Biggest Upset",
+      value: `${biggestUpset.winnerName} beat ${biggestUpset.loserName}`,
+      detail: `Rating gap: ${biggestUpset.diff.toFixed(0)} points`,
+    });
+  }
+
+  // King of consistency: highest win rate with ≥5 matches
+  const consistent = leaderboard
+    .filter((p) => p.totalMatches >= 5)
+    .sort((a, b) => b.winRate - a.winRate)[0];
+  if (consistent) {
+    insights.push({
+      emoji: "👑",
+      title: "King of Consistency",
+      value: consistent.name,
+      detail: `${(consistent.winRate * 100).toFixed(0)}% win rate (${consistent.totalMatches} matches)`,
+    });
+  }
+
+  // Most improved: largest positive rating change in last 10 matches
+  const recentHistory = await prisma.ratingHistory.findMany({
+    orderBy: { timestamp: "desc" },
+  });
+  const last10Map = new Map<string, typeof recentHistory>();
+  for (const h of recentHistory) {
+    const arr = last10Map.get(h.playerId) ?? [];
+    if (arr.length < 10) {
+      arr.push(h);
+      last10Map.set(h.playerId, arr);
+    }
+  }
+
+  let mostImprovedDiff = 0;
+  let mostImproved: { name: string; diff: number } | null = null;
+  const playerMap = new Map(leaderboard.map((p) => [p.playerId, p.name]));
+
+  for (const [playerId, hist] of last10Map) {
+    if (hist.length < 3) continue;
+    const oldest = hist[hist.length - 1];
+    const newest = hist[0];
+    const diff = newest.ratingAfter - oldest.ratingBefore;
+    if (diff > mostImprovedDiff) {
+      mostImprovedDiff = diff;
+      mostImproved = { name: playerMap.get(playerId) ?? playerId, diff };
+    }
+  }
+
+  if (mostImproved) {
+    insights.push({
+      emoji: "📈",
+      title: "Most Improved",
+      value: mostImproved.name,
+      detail: `+${mostImproved.diff.toFixed(0)} rating in last matches`,
+    });
+  }
+
+  // Closest rivalry: H2H closest to 50/50 with most games
+  const h2hMap = new Map<string, { p1: string; p2: string; p1Name: string; p2Name: string; p1Wins: number; p2Wins: number }>();
+  for (const m of allMatches) {
+    const key = [m.winnerId, m.loserId].sort().join("|");
+    const cur = h2hMap.get(key) ?? {
+      p1: m.winnerId < m.loserId ? m.winnerId : m.loserId,
+      p2: m.winnerId < m.loserId ? m.loserId : m.winnerId,
+      p1Name: m.winnerId < m.loserId ? m.winner.name : m.loser.name,
+      p2Name: m.winnerId < m.loserId ? m.loser.name : m.winner.name,
+      p1Wins: 0,
+      p2Wins: 0,
+    };
+    if (m.winnerId === cur.p1) cur.p1Wins++;
+    else cur.p2Wins++;
+    h2hMap.set(key, cur);
+  }
+
+  let closestRivalry: { p1Name: string; p2Name: string; p1Wins: number; p2Wins: number; balance: number } | null = null;
+  let closestBalance = Infinity;
+
+  for (const r of h2hMap.values()) {
+    const total = r.p1Wins + r.p2Wins;
+    if (total < 4) continue;
+    const balance = Math.abs(r.p1Wins - r.p2Wins) / total;
+    if (balance < closestBalance) {
+      closestBalance = balance;
+      closestRivalry = { ...r, balance };
+    }
+  }
+
+  if (closestRivalry) {
+    insights.push({
+      emoji: "⚔️",
+      title: "Closest Rivalry",
+      value: `${closestRivalry.p1Name} vs ${closestRivalry.p2Name}`,
+      detail: `${closestRivalry.p1Wins}–${closestRivalry.p2Wins}`,
+    });
+  }
+
+  // Most dominant H2H
+  let mostDominant: { winnerName: string; loserName: string; wins: number; losses: number } | null = null;
+  let bestDominanceRatio = 0;
+
+  for (const r of h2hMap.values()) {
+    if (r.p1Wins + r.p2Wins < 4) continue;
+    const ratio1 = r.p1Wins / Math.max(1, r.p2Wins);
+    const ratio2 = r.p2Wins / Math.max(1, r.p1Wins);
+    if (ratio1 > bestDominanceRatio) {
+      bestDominanceRatio = ratio1;
+      mostDominant = { winnerName: r.p1Name, loserName: r.p2Name, wins: r.p1Wins, losses: r.p2Wins };
+    }
+    if (ratio2 > bestDominanceRatio) {
+      bestDominanceRatio = ratio2;
+      mostDominant = { winnerName: r.p2Name, loserName: r.p1Name, wins: r.p2Wins, losses: r.p1Wins };
+    }
+  }
+
+  if (mostDominant) {
+    insights.push({
+      emoji: "💪",
+      title: "Most Dominant H2H",
+      value: `${mostDominant.winnerName} over ${mostDominant.loserName}`,
+      detail: `${mostDominant.wins}–${mostDominant.losses}`,
+    });
+  }
+
+  // Farmer: highest win rate against players ranked bottom half
+  if (leaderboard.length >= 4) {
+    const halfRank = Math.floor(leaderboard.length / 2);
+    const weakPlayerIds = new Set(leaderboard.slice(halfRank).map((p) => p.playerId));
+
+    const farmerMap = new Map<string, { name: string; wins: number; total: number }>();
+    for (const m of allMatches) {
+      if (weakPlayerIds.has(m.loserId)) {
+        const cur = farmerMap.get(m.winnerId) ?? { name: m.winner.name, wins: 0, total: 0 };
+        farmerMap.set(m.winnerId, { ...cur, wins: cur.wins + 1, total: cur.total + 1 });
+      }
+      if (weakPlayerIds.has(m.winnerId)) {
+        const cur = farmerMap.get(m.loserId) ?? { name: m.loser.name, wins: 0, total: 0 };
+        farmerMap.set(m.loserId, { ...cur, total: cur.total + 1 });
+      }
+    }
+
+    const farmer = [...farmerMap.values()]
+      .filter((f) => f.total >= 5)
+      .sort((a, b) => b.wins / b.total - a.wins / a.total)[0];
+
+    if (farmer) {
+      insights.push({
+        emoji: "🌾",
+        title: "The Farmer",
+        value: farmer.name,
+        detail: `${farmer.wins}/${farmer.total} wins vs lower-ranked opponents`,
+      });
+    }
+  }
+
+  // Ghost: inactive but high-ranked (high RD + high rating)
+  const ghost = leaderboard
+    .filter((p) => p.rd > 150 && p.rating > 1500 && p.totalMatches >= 3)
+    .sort((a, b) => b.rating - a.rating)[0];
+
+  if (ghost) {
+    insights.push({
+      emoji: "👻",
+      title: "The Ghost",
+      value: ghost.name,
+      detail: `Rating ${ghost.rating.toFixed(0)} but rarely plays (RD: ${ghost.rd.toFixed(0)})`,
+    });
+  }
+
+  // Best player all-time (highest rank score)
+  if (leaderboard.length > 0 && leaderboard[0].totalMatches >= 3) {
+    insights.push({
+      emoji: "🥇",
+      title: "GOAT (All-Time)",
+      value: leaderboard[0].name,
+      detail: `Rating ${leaderboard[0].rating.toFixed(0)}, rank score ${leaderboard[0].rankScore.toFixed(0)}`,
+    });
+  }
+
+  return NextResponse.json({ insights });
+}
