@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { getLeaderboard } from "@/lib/stats";
 
+export const dynamic = "force-dynamic";
+
 function RdBadge({ rd }: { rd: number }) {
   const level = rd < 80 ? "high" : rd < 150 ? "mid" : "low";
   const colors = {

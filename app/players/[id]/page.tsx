@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { getPlayerStats } from "@/lib/stats";
 import { notFound } from "next/navigation";
+
+export const dynamic = "force-dynamic";
 import RatingChart from "@/components/RatingChart";
 
 function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {

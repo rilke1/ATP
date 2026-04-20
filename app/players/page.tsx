@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
 import { getLeaderboard } from "@/lib/stats";
+
+export const dynamic = "force-dynamic";
 
 export default async function PlayersPage() {
   const leaderboard = await getLeaderboard();

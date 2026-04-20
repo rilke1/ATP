@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { getLeaderboard } from "@/lib/stats";
 
+export const dynamic = "force-dynamic";
+
 type Insight = { title: string; value: string; detail: string; emoji: string };
 
 async function getInsights(): Promise<Insight[]> {
