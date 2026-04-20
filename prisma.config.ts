@@ -7,6 +7,9 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env.DATABASE_URL ?? "file:./prisma/dev.db",
+    // In Prisma 7 the URL is configured here, not in schema.prisma.
+    // For local dev: DATABASE_URL=file:./dev.db  (see .env)
+    // For Turso:     DATABASE_URL=libsql://<db>.turso.io?authToken=<token>
+    url: process.env.DATABASE_URL!,
   },
 });
