@@ -41,11 +41,12 @@ export async function GET() {
 
   // Biggest upset: loser had a much higher rating than winner at the time of the match
   // Use ratingHistory to find rating at match time
-  const ratingHistories = await prisma.ratingHistory.findMany({ include: { match: true } });
-  const histByMatch = new Map<string, typeof ratingHistories>();
+  const ratingHistories = await prisma.ratingHistory.findMany();
+  type RatingHistoryRow = (typeof ratingHistories)[number];
+  const histByMatch = new Map<string, RatingHistoryRow[]>();
   for (const h of ratingHistories) {
     if (!h.matchId) continue;
-    const arr = histByMatch.get(h.matchId) ?? [];
+    const arr: RatingHistoryRow[] = histByMatch.get(h.matchId) ?? [];
     arr.push(h);
     histByMatch.set(h.matchId, arr);
   }
@@ -54,7 +55,7 @@ export async function GET() {
   let biggestUpset: { winnerName: string; loserName: string; diff: number } | null = null;
 
   for (const m of allMatches) {
-    const hist = histByMatch.get(m.id) ?? [];
+    const hist: RatingHistoryRow[] = histByMatch.get(m.id) ?? [];
     const winnerHist = hist.find((h) => h.playerId === m.winnerId);
     const loserHist = hist.find((h) => h.playerId === m.loserId);
     if (!winnerHist || !loserHist) continue;
@@ -96,9 +97,10 @@ export async function GET() {
   const recentHistory = await prisma.ratingHistory.findMany({
     orderBy: { timestamp: "desc" },
   });
-  const last10Map = new Map<string, typeof recentHistory>();
+  type RecentHistoryRow = (typeof recentHistory)[number];
+  const last10Map = new Map<string, RecentHistoryRow[]>();
   for (const h of recentHistory) {
-    const arr = last10Map.get(h.playerId) ?? [];
+    const arr: RecentHistoryRow[] = last10Map.get(h.playerId) ?? [];
     if (arr.length < 10) {
       arr.push(h);
       last10Map.set(h.playerId, arr);

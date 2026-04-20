@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
 import { getLeaderboard } from "@/lib/stats";
-import { rankScore } from "@/lib/glicko2";
 
 type Insight = { title: string; value: string; detail: string; emoji: string };
 
@@ -40,10 +39,11 @@ async function getInsights(): Promise<Insight[]> {
 
   // Biggest upset
   const ratingHistories = await prisma.ratingHistory.findMany();
-  const histByMatch = new Map<string, typeof ratingHistories>();
+  type RatingHistoryRow = (typeof ratingHistories)[number];
+  const histByMatch = new Map<string, RatingHistoryRow[]>();
   for (const h of ratingHistories) {
     if (!h.matchId) continue;
-    const arr = histByMatch.get(h.matchId) ?? [];
+    const arr: RatingHistoryRow[] = histByMatch.get(h.matchId) ?? [];
     arr.push(h);
     histByMatch.set(h.matchId, arr);
   }
@@ -52,7 +52,7 @@ async function getInsights(): Promise<Insight[]> {
   let biggestUpset: { winnerName: string; loserName: string; diff: number } | null = null;
 
   for (const m of allMatches) {
-    const hist = histByMatch.get(m.id) ?? [];
+    const hist: RatingHistoryRow[] = histByMatch.get(m.id) ?? [];
     const winnerHist = hist.find((h) => h.playerId === m.winnerId);
     const loserHist = hist.find((h) => h.playerId === m.loserId);
     if (!winnerHist || !loserHist) continue;
@@ -85,9 +85,10 @@ async function getInsights(): Promise<Insight[]> {
 
   // Most improved (recent 10 matches)
   const recentHistory = await prisma.ratingHistory.findMany({ orderBy: { timestamp: "desc" } });
-  const last10Map = new Map<string, typeof recentHistory>();
+  type RecentHistoryRow = (typeof recentHistory)[number];
+  const last10Map = new Map<string, RecentHistoryRow[]>();
   for (const h of recentHistory) {
-    const arr = last10Map.get(h.playerId) ?? [];
+    const arr: RecentHistoryRow[] = last10Map.get(h.playerId) ?? [];
     if (arr.length < 10) { arr.push(h); last10Map.set(h.playerId, arr); }
   }
   const playerMap = new Map(leaderboard.map((p) => [p.playerId, p.name]));
