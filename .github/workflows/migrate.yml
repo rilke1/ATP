@@ -1,11 +1,11 @@
-name: Prisma Migrate Deploy
+name: Turso Migrate Deploy
 
 on:
   workflow_dispatch:
 
 jobs:
   migrate:
-    name: Run migrations
+    name: Apply pending migrations to Turso
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,12 +18,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Generate Prisma Client
-        run: npx prisma generate
+      - name: Apply migrations
+        run: node scripts/migrate-turso.mjs
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-
-      - name: Deploy migrations
-        run: npx prisma migrate deploy
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_AUTH_TOKEN: ${{ secrets.DATABASE_AUTH_TOKEN }}
